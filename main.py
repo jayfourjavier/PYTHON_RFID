@@ -2,12 +2,15 @@ import sys
 import re
 import serial
 import serial.tools.list_ports
+import time
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QWidget, 
     QVBoxLayout, QHBoxLayout, QLabel, QStackedWidget, 
     QTableWidget, QTableWidgetItem, QComboBox, QLineEdit, QTextEdit, QSplitter
 )
 from PyQt6.QtCore import Qt, QDateTime, QTimer
+import os
 
 class RFIDApp(QMainWindow):
     def __init__(self):
@@ -141,9 +144,6 @@ class RFIDApp(QMainWindow):
         refresh_button.setStyleSheet("font-size: 14px; font-weight: bold;")
         clear_button.setStyleSheet("font-size: 14px; font-weight: bold;")
 
-
-
-
         # Connect buttons to functions
         refresh_button.clicked.connect(self.populate_logs)
         clear_button.clicked.connect(self.clear_logs)
@@ -197,43 +197,50 @@ class RFIDApp(QMainWindow):
         # Timer for checking serial connection
         self.serial_check_timer = QTimer(self)
         self.serial_check_timer.timeout.connect(self.check_serial_connection)
-        self.serial_check_timer.start(1000)  # Check connection every 1 second
+        self.serial_check_timer.start(1)  # Check connection every 500ms (reduced from 1000ms)
 
         # Timer for reading serial data
         self.serial_timer = QTimer(self)
         self.serial_timer.timeout.connect(self.read_serial)
-        self.serial_timer.start(500)  # Read serial data every 500ms (adjust as needed)
-
-
+        self.serial_timer.start(1)  # Read serial data every 100ms (reduced from 500ms)
+    
     def show_enroll(self):
         self.stack.setCurrentWidget(self.enroll_page)
 
     def sync_logs(self):
         if self.serial_port and self.serial_port.is_open:
-            self.serial_port.write("SYNC_LOGS\n".encode())
-            self.serial_monitor.append("📤 Sent: SYNC_LOGS")
+            try:
+                self.serial_port.write("SYNC_LOGS\n".encode())
+                self.serial_monitor.append("📤 Sent: SYNC_LOGS")
 
-            receiving_logs = False  # Flag to check if we are inside log transfer
-            log_file_path = "data.txt"
+                receiving_logs = False  # Flag to check if we are inside log transfer
+                log_file_path = "data.txt"
 
-            with open(log_file_path, "w", encoding="utf-8") as log_file:  # Overwrite logs
-                while True:
-                    if self.serial_port.in_waiting > 0:
-                        line = self.serial_port.readline().decode().strip()
+                with open(log_file_path, "w", encoding="utf-8") as log_file:  # Overwrite logs
+                    while True:
+                        if self.serial_port.in_waiting > 0:
+                            line = self.serial_port.readline().decode().strip()
 
-                        if line == "START_LOGS":
-                            receiving_logs = True  # Start receiving logs
-                            self.serial_monitor.append("📥 Received: START_LOGS")
+                            if line == "START_LOGS":
+                                receiving_logs = True  # Start receiving logs
+                                self.serial_monitor.append("📥 Received: START_LOGS")
 
-                        elif line == "END_LOGS":
-                            self.serial_monitor.append("📥 Received: END_LOGS")
-                            break  # Stop reading logs
+                            elif line == "END_LOGS":
+                                self.serial_monitor.append("📥 Received: END_LOGS")
+                                break  # Stop reading logs
 
-                        elif receiving_logs:
-                            self.serial_monitor.append(f"📥 Received: {line}")
-                            log_file.write(line + "\n")  # Save to file
+                            elif receiving_logs:
+                                self.serial_monitor.append(f"📥 Received: {line}")
+                                log_file.write(line + "\n")  # Save to file
 
-            self.serial_monitor.append("✅ Log sync complete!")
+                self.serial_monitor.append("✅ Log sync complete!")
+
+            except Exception as e:
+                self.serial_monitor.append(f"❌ Error during log sync: {str(e)}")
+                # Restore backup if it exists
+                if os.path.exists(log_file_path):
+                    os.rename(log_file_path, "data.txt")
+                    self.serial_monitor.append("✅ Restored previous log file")
 
 
     def show_logs(self):
@@ -253,8 +260,8 @@ class RFIDApp(QMainWindow):
                 if not log:
                     continue  # Skip empty lines
 
-                # Example log format: "2025-03-09 12:34:56,12345678,ItemName,T"
-                log_parts = log.split(",")
+                # Example log format: "2025-03-26 12:00:00, 1234567893, Multimeter, Exit"
+                log_parts = [part.strip() for part in log.split(",")]
                 if len(log_parts) == 4:
                     timestamp, rfid, item, action = log_parts
                     row_position = self.logs_table.rowCount()
@@ -264,7 +271,7 @@ class RFIDApp(QMainWindow):
                     self.logs_table.setItem(row_position, 0, QTableWidgetItem(timestamp))
                     self.logs_table.setItem(row_position, 1, QTableWidgetItem(rfid))
                     self.logs_table.setItem(row_position, 2, QTableWidgetItem(item))
-                    self.logs_table.setItem(row_position, 3, QTableWidgetItem("Entry" if action == "T" else "Exit"))
+                    self.logs_table.setItem(row_position, 3, QTableWidgetItem(action.strip()))
 
         except FileNotFoundError:
             self.serial_monitor.append("⚠️ No logs found (data.txt missing).")
@@ -320,10 +327,12 @@ class RFIDApp(QMainWindow):
 
     def sync_time(self):
         if self.serial_port and self.serial_port.is_open:
+            self.serial_port.write("SYNC_TIME\n".encode())
+            time.sleep(1)  # 1 second delay
             current_time = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
-            message = f"SYNC_TIME\n{current_time}\n"
+            message = f"{current_time}\n"
             self.serial_port.write(message.encode())
-            self.serial_monitor.append(f"📤 Sent: {message.strip()}")
+            self.serial_monitor.append(f"📤 Sent: SYNC_TIME\n{current_time}")
 
     def read_serial(self):
         if self.serial_port and self.serial_port.is_open:
@@ -380,6 +389,7 @@ class RFIDApp(QMainWindow):
         if self.serial_port and self.serial_port.is_open:
             self.serial_monitor.append("🔍 Scanning RFID...")
             self.serial_port.write(b"SCAN_NOW\n")  # Send command to Arduino
+            self.rfid_label.setText("Scanned RFID: None")  # Reset RFID label
         else:
             self.serial_monitor.append("❌ No Serial Connection")
 
